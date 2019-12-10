@@ -3,6 +3,7 @@
 #include <iostream>
 #include <vector>
 #include <string>
+#include <iomanip>
 
 using std::cout;
 using std::endl;
@@ -105,6 +106,26 @@ void get_alg_properties(HCRYPTPROV handler, DWORD alg_id, csp_alg_properties& pa
 	throw "algorithm_id was not found";
 }
 
+DWORD get_key_len(DWORD min, DWORD max, DWORD delta, DWORD k)
+{
+	DWORD mod = (max - min) / delta + 1;
+	k %= mod;
+	return min + k * delta;
+}
+
+void gen_exchange_key(HCRYPTPROV csp_handler, DWORD alg_id, DWORD k, HCRYPTKEY& key_handler)
+{
+	csp_alg_properties alg_prop;
+	get_alg_properties(csp_handler, alg_id, alg_prop);
+	DWORD keylen = get_key_len(alg_prop.enumalgs.dwMinLen, alg_prop.enumalgs.dwMaxLen, alg_prop.keyx_key_inc, k);
+	DWORD flags = keylen << 16;
+	flags |= CRYPT_EXPORTABLE;
+	flags |= CRYPT_USER_PROTECTED;
+	if (!CryptGenKey(csp_handler, alg_id, flags, &key_handler))
+		throw "in key create";
+}
+
+
 void set_key_info(HCRYPTKEY key_handler, const block_key_info& info)
 {
 	if (!CryptSetKeyParam(key_handler, KP_MODE, (BYTE*)&(info.mode), 0))
@@ -113,66 +134,133 @@ void set_key_info(HCRYPTKEY key_handler, const block_key_info& info)
 		throw "in set key iv";
 }
 
-
-void get_hash(const char* filename, HCRYPTPROV csp_handler, ALG_ID alg_id, HCRYPTKEY key_handler, HCRYPTHASH& hash_handler)
+void gen_sblock_key(HCRYPTPROV csp_handler, DWORD alg_id, HCRYPTKEY& key_handler, DWORD mode)
 {
-	if (!CryptCreateHash(csp_handler, alg_id, key_handler, 0, &hash_handler))
-		throw "create hash";
+	csp_alg_properties alg_prop;
+	get_alg_properties(csp_handler, alg_id, alg_prop);
+	DWORD keylen = alg_prop.enumalgs.dwMaxLen;
+	DWORD flags = keylen << 16;
+	flags |= CRYPT_EXPORTABLE;
+	flags |= CRYPT_USER_PROTECTED;
+	if (!CryptGenKey(csp_handler, alg_id, flags, &key_handler))
+		throw "in key create";
+	block_key_info info;
+	info.mode = mode;
+	DWORD dword_size = sizeof(DWORD);
+	if (!CryptGetKeyParam(key_handler, KP_BLOCKLEN, (BYTE*)&(info.block_byte_size), &dword_size, 0))
+		throw "in get key block size";
+	info.iv = new BYTE[info.block_byte_size];
+	if (!CryptGenRandom(csp_handler, info.block_byte_size, info.iv))
+		throw "in gen iv";
+	set_key_info(key_handler, info);
+	delete[] info.iv;
+}
+
+void get_key_info(HCRYPTKEY key_handler, block_key_info& info)
+{
+	DWORD dword_size = sizeof(DWORD);
+	if (!CryptGetKeyParam(key_handler, KP_MODE, (BYTE*)&(info.mode), &dword_size, 0))
+		throw "in get key mode";
+	if (!CryptGetKeyParam(key_handler, KP_BLOCKLEN, (BYTE*)&(info.block_byte_size), &dword_size, 0))
+		throw "in get key block size";
+	info.block_byte_size /= 8;
+	info.iv = new BYTE[info.block_byte_size];
+	if (!CryptGetKeyParam(key_handler, KP_IV, info.iv, &(info.block_byte_size), 0))
+		throw "in get key block";
+}
+
+void export_key(HCRYPTKEY key_handler, HCRYPTKEY expkey_handler, const char* filename)
+{
+	DWORD blob_size;
+	if (!CryptExportKey(key_handler, expkey_handler, SIMPLEBLOB, 0, NULL, &blob_size))
+		throw "in get blob size";
+	BYTE* blob = new BYTE[blob_size];
+	if (!CryptExportKey(key_handler, expkey_handler, SIMPLEBLOB, 0, blob, &blob_size))
+		throw "in get blob";
+	FILE* f = fopen(filename, "wb");
+	if (!f) throw "in open file to write";
+	if (fwrite(&blob_size, 1, sizeof(blob_size), f) != sizeof(blob_size))
+		throw "in writing to file";
+	if (fwrite(blob, 1, blob_size, f) != blob_size)
+		throw "in writing to file";
+	delete[] blob;
+	block_key_info info;
+	get_key_info(key_handler, info);
+	if (fwrite(&(info.mode), 1, sizeof(info.mode), f) != sizeof(info.mode))
+		throw "in writing to file";
+	if (fwrite(&(info.block_byte_size), 1, sizeof(info.block_byte_size), f) != sizeof(info.block_byte_size))
+		throw "in writing to file";
+	if (fwrite(info.iv, 1, info.block_byte_size, f) != info.block_byte_size)
+		throw "in writing to file";
+	fclose(f);
+}
+
+void import_key(HCRYPTPROV csp_handler, HCRYPTKEY impkey_handler, const char* filename, HCRYPTKEY& key_handler)
+{
 	FILE* f = fopen(filename, "rb");
-	if (!f)
-		throw "open file to read";
-	int buff_size = 1024;
+	if (!f) throw "in open file to read";
+	DWORD blob_size;
+	if (fread(&blob_size, 1, sizeof(blob_size), f) != sizeof(blob_size))
+		throw "in reading from file";
+	BYTE* blob = new BYTE[blob_size];
+	if (fread(blob, 1, blob_size, f) != blob_size)
+		throw "in reading from file";
+	if (!CryptImportKey(csp_handler, blob, blob_size, impkey_handler, 0, &key_handler))
+		throw "in importing key";
+	delete[] blob;
+	block_key_info info;
+	if (fread(&(info.mode), 1, sizeof(info.mode), f) != sizeof(info.mode))
+		throw "in reading from file";
+	if (fread(&(info.block_byte_size), 1, sizeof(info.block_byte_size), f) != sizeof(info.block_byte_size))
+		throw "in reading from file";
+	info.iv = new BYTE[info.block_byte_size];
+	if (fread(info.iv, 1, info.block_byte_size, f) != info.block_byte_size)
+		throw "in reading from file";
+	set_key_info(key_handler, info);
+	delete[] info.iv;
+}
+
+
+void encrypt_file(HCRYPTKEY key_handler, const char* file_in, const char* file_out)
+{
+	DWORD data_block_size = 1024;
+	DWORD buff_size = data_block_size + 128;
 	BYTE* buff = new BYTE[buff_size];
+	FILE* fin = fopen(file_in, "rb");
+	if (!fin) throw "open file to read";
+	FILE* fout = fopen(file_out, "wb");
+	if (!fout) throw "open file to write";
 	DWORD cur_len;
-	while (cur_len = fread(buff, 1, buff_size, f))
-		CryptHashData(hash_handler, buff, cur_len, 0);
+	while (cur_len = fread(buff, 1, data_block_size, fin))
+	{
+		if (!CryptEncrypt(key_handler, NULL, (cur_len == data_block_size ? FALSE : TRUE), 0, buff, &cur_len, buff_size))
+			throw "encryption data";
+		fwrite(buff, 1, cur_len, fout);
+	}
+	fclose(fin);
+	fclose(fout);
 	delete[] buff;
-	fclose(f);
 }
 
-void sign_file(const char* filename, HCRYPTPROV csp_handler, ALG_ID hash_id)
+void decrypt_file(HCRYPTKEY key_handler, const char* file_in, const char* file_out)
 {
-	HCRYPTHASH hash_handler;
-	get_hash(filename, csp_handler, hash_id, 0, hash_handler);
-	DWORD sign_len;
-	if (!CryptSignHash(hash_handler, AT_SIGNATURE, NULL, 0, NULL, &sign_len))
-		throw "get sign len";
-	BYTE* sign_data = new BYTE[sign_len];
-	if (!CryptSignHash(hash_handler, AT_SIGNATURE, NULL, 0, sign_data, &sign_len))
-		throw "get sign";
-	CryptDestroyHash(hash_handler);
-	char signname[FILENAME_MAX];
-	sprintf(signname, "%s.sign", filename);
-	FILE* f = fopen(signname, "wb");
-	if (!f)
-		throw "open file to write";
-	fwrite(&sign_len, 1, sizeof(sign_len), f);
-	fwrite(sign_data, 1, sign_len, f);
-	fclose(f);
-	delete[] sign_data;
-}
-
-bool verify_file(const char* filename, HCRYPTPROV csp_handler, ALG_ID hash_id)
-{
-	DWORD sign_len;
-	char signname[FILENAME_MAX];
-	sprintf(signname, "%s.sign", filename);
-	FILE* f = fopen(signname, "rb");
-	if (!f)
-		"open sign-file to read";
-	fread(&sign_len, 1, sizeof(sign_len), f);
-	BYTE* sign_data = new BYTE[sign_len];
-	fread(sign_data, 1, sign_len, f);
-	fclose(f);
-	HCRYPTHASH hash_handler;
-	get_hash(filename, csp_handler, hash_id, 0, hash_handler);
-	HCRYPTKEY pubkey_handler;
-	if (!CryptGetUserKey(csp_handler, AT_SIGNATURE, &pubkey_handler))
-		throw "get signature public key";
-	BOOL result = CryptVerifySignature(hash_handler, sign_data, sign_len, pubkey_handler, NULL, 0);
-	CryptDestroyHash(hash_handler);
-	delete[] sign_data;
-	return result;
+	DWORD data_block_size = 1024;
+	DWORD buff_size = data_block_size + 128;
+	BYTE* buff = new BYTE[buff_size];
+	FILE* fin = fopen(file_in, "rb");
+	if (!fin) throw "open file to read";
+	FILE* fout = fopen(file_out, "wb");
+	if (!fout) throw "open file to write";
+	DWORD cur_len;
+	while (cur_len = fread(buff, 1, data_block_size, fin))
+	{
+		if (!CryptDecrypt(key_handler, NULL, (cur_len == data_block_size ? FALSE : TRUE), 0, buff, &cur_len))
+			throw "decryption data";
+		fwrite(buff, 1, cur_len, fout);
+	}
+	fclose(fin);
+	fclose(fout);
+	delete[] buff;
 }
 
 
@@ -181,30 +269,58 @@ int main(int argc, const char** argv)
 	DWORD csp_type = PROV_RSA_AES;
 	auto csp_name = (LPTSTR) MS_ENH_RSA_AES_PROV;
 	DWORD k = 11;
-	std::string keyset_name = "super_roman";
-	ALG_ID hash_id = 32770; //MD4
+	std::string keyset_name = "dexxxed";
+	DWORD alg_exchange_id = 41984; //RSA Key Exchange
+	DWORD alg_sblock_id = 26128; //AES 256-bit
 	HCRYPTPROV csp_handler = 0;
-
+	HCRYPTKEY key_exchange_handler = 0;
 	if (argc == 1)
 	{
 		cout << "bad use, use one of the options below" << endl;
-		cout << "lab5.exe sign file_to_sign" << endl;
-		cout << "lab5.exe verify file_to-verify" << endl;
+		cout << "lab4.exe gen mode file_to_save" << endl;
+		cout << "lab4.exe encrypt key_file file_in file_out" << endl;
+		cout << "lab4.exe decrypt key_file file_in file_out" << endl;
 		return 0;
 	}
 	try
 	{
 		get_csp_handler(csp_type, csp_name, keyset_name, csp_handler);
-		if (!strcmp(argv[1], "sign"))
+		if (!strcmp(argv[1], "gen"))
 		{
-			sign_file(argv[2], csp_handler, hash_id);
-		}
-		else if (!strcmp(argv[1], "verify"))
-		{
-			if (verify_file(argv[2], csp_handler, hash_id))
-				cout << "sign correct" << endl;
+			DWORD mode;
+			if (!strcmp(argv[2], "cbc"))
+				mode = CRYPT_MODE_CBC;
+			else if (!strcmp(argv[2], "ecb"))
+				mode = CRYPT_MODE_ECB;
+			//else if (!strcmp(argv[2], "ofb"))
+			//	mode = CRYPT_MODE_OFB;
+			else if (!strcmp(argv[2], "cfb"))
+				mode = CRYPT_MODE_CFB;
+			//else if (!strcmp(argv[2], "cts"))
+			//	mode = CRYPT_MODE_CTS;
 			else
-				cout << "BAD SIGN" << endl;
+				throw "bad 2 argument";
+			HCRYPTKEY key_handler, expkey_handler;
+			gen_sblock_key(csp_handler, alg_sblock_id, key_handler, mode);
+			if (!CryptGetUserKey(csp_handler, AT_KEYEXCHANGE, &expkey_handler))
+				throw "get exchange key";
+			export_key(key_handler, expkey_handler, argv[3]);
+		}
+		else if (!strcmp(argv[1], "encrypt"))
+		{
+			HCRYPTKEY key_handler, impkey_handler;
+			if (!CryptGetUserKey(csp_handler, AT_KEYEXCHANGE, &impkey_handler))
+				throw "get exchange key";
+			import_key(csp_handler, impkey_handler, argv[2], key_handler);
+			encrypt_file(key_handler, argv[3], argv[4]);
+		}
+		else if (!strcmp(argv[1], "decrypt"))
+		{
+			HCRYPTKEY key_handler, impkey_handler;
+			if (!CryptGetUserKey(csp_handler, AT_KEYEXCHANGE, &impkey_handler))
+				throw "get exchange key";
+			import_key(csp_handler, impkey_handler, argv[2], key_handler);
+			decrypt_file(key_handler, argv[3], argv[4]);
 		}
 		else
 			throw "bad 1 argument";
