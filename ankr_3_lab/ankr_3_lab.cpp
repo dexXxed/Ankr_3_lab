@@ -20,7 +20,7 @@ struct block_key_info
 {
 	DWORD mode;
 	DWORD block_byte_size;
-	BYTE* iv;
+	BYTE* iv = nullptr;
 };
 
 
@@ -270,7 +270,6 @@ int main(int argc, const char** argv)
 	auto csp_name = (LPTSTR) MS_ENH_RSA_AES_PROV;
 	DWORD k = 11;
 	std::string keyset_name = "dexxxed";
-	DWORD alg_exchange_id = 41984; //RSA Key Exchange
 	DWORD alg_sblock_id = 26128; //AES 256-bit
 	HCRYPTPROV csp_handler = 0;
 	HCRYPTKEY key_exchange_handler = 0;
@@ -280,7 +279,7 @@ int main(int argc, const char** argv)
 		cout << "lab4.exe gen mode file_to_save" << endl;
 		cout << "lab4.exe encrypt key_file file_in file_out" << endl;
 		cout << "lab4.exe decrypt key_file file_in file_out" << endl;
-		return 0;
+		return -1;
 	}
 	try
 	{
