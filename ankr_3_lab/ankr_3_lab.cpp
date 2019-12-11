@@ -45,13 +45,6 @@ void get_csp_containers(HCRYPTPROV handle, std::vector<std::string>& mas)
 		throw descriptive_exception("In reading containers");
 }
 
-bool name_in_array(const std::string& name, const std::vector<std::string>& mas)
-{
-	for (const std::string& a : mas)
-		if (a == name)
-			return true;
-	return false;
-}
 
 void get_csp_handler(DWORD csp_type, LPTSTR csp_name, const std::string keyset_name, HCRYPTPROV& handler)
 {
@@ -316,7 +309,7 @@ int main(int argc, const char** argv)
 			import_key(csp_handler, impkey_handler, argv[2], key_handler);
 			encrypt_file(key_handler, argv[3], argv[4]);
 		}
-		else if (!strcmp(argv[1], "decrypt") && argv[3] != "" && argv[4] != "")
+		else if (!strcmp(argv[1], "decrypt") && strcmp(argv[3],"") && strcmp(argv[4], ""))
 		{
 			HCRYPTKEY key_handler, impkey_handler;
 			if (!CryptGetUserKey(csp_handler, AT_KEYEXCHANGE, &impkey_handler))
