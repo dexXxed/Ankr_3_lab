@@ -37,12 +37,12 @@ void get_csp_containers(HCRYPTPROV handle, std::vector<std::string>& mas)
 	char buff[4096];
 	DWORD tmp = 4096;
 	if (!CryptGetProvParam(handle, PP_ENUMCONTAINERS, (BYTE*)&buff, &tmp, CRYPT_FIRST))
-		throw descriptive_exception("in start reading conainers");
+		throw descriptive_exception("In start reading containers");
 	mas.push_back(buff);
 	while (CryptGetProvParam(handle, PP_ENUMCONTAINERS, (BYTE*)&buff, &tmp, CRYPT_NEXT))
 		mas.push_back(buff);
 	if (GetLastError() != ERROR_NO_MORE_ITEMS)
-		throw descriptive_exception("in reading conainers");
+		throw descriptive_exception("In reading containers");
 }
 
 bool name_in_array(const std::string& name, const std::vector<std::string>& mas)
@@ -58,36 +58,30 @@ void get_csp_handler(DWORD csp_type, LPTSTR csp_name, const std::string keyset_n
 	std::vector<std::string> containers;
 	if (!CryptAcquireContext(&handler, NULL, csp_name, csp_type, 0))
 	{
-		if (GetLastError() == 0x80090016L)
-			goto mark_create_keycase;
+		if (GetLastError() == 0x80090016L) {
+			cout << "create " << keyset_name << " keycontainer" << endl;
+			CryptReleaseContext(handler, 0);
+			if (!CryptAcquireContext(&handler, (LPCWSTR)keyset_name.c_str(), csp_name, csp_type, CRYPT_NEWKEYSET))
+			{
+				if (GetLastError() == 0x8009000FL)
+				{
+					//cout << "Key set " << keyset_name << " is already exist, try open" << endl;
+					CryptReleaseContext(handler, 0);
+					if (!CryptAcquireContext(&handler, (LPCWSTR)keyset_name.c_str(), csp_name, csp_type, 0))
+						throw descriptive_exception("in get csp handle with exist key container");
+					containers.clear();
+					get_csp_containers(handler, containers);
+				}
+				else
+					throw descriptive_exception("in get csp handle with create key container");
+			}
+		}
 		else
 			throw descriptive_exception("in get csp handle with 0 dwFlags");
 	}
 	get_csp_containers(handler, containers);
-	if (name_in_array(keyset_name, containers))
-	{
-	mark_open_exist_keycase:
-		CryptReleaseContext(handler, 0);
-		if (!CryptAcquireContext(&handler, (LPCWSTR) keyset_name.c_str(), csp_name, csp_type, 0))
-			throw descriptive_exception("in get csp handle with exist key container");
-		containers.clear();
-		get_csp_containers(handler, containers);
-	}
-	else
-	{
-	mark_create_keycase:
-		cout << "ctreate " << keyset_name << " keycontainer" << endl;
-		CryptReleaseContext(handler, 0);
-		if (!CryptAcquireContext(&handler, (LPCWSTR) keyset_name.c_str(), csp_name, csp_type, CRYPT_NEWKEYSET))
-		{
-			if (GetLastError() == 0x8009000FL)
-			{
-				//cout << "Key set " << keyset_name << " is already exist, try open" << endl;
-				goto mark_open_exist_keycase;
-			}
-			else
-				throw descriptive_exception("in get csp handle with create key container");
-		}
+	if (find(containers.begin(), containers.end(), keyset_name) != containers.end()) {
+		cout << "Keycontainer " << keyset_name << " already exists" << endl;
 	}
 }
 
@@ -277,7 +271,7 @@ int main(int argc, const char** argv)
 	DWORD csp_type = PROV_RSA_AES;
 	auto csp_name = (LPTSTR) MS_ENH_RSA_AES_PROV;
 	DWORD k = 11;
-	std::string keyset_name = "dexxxed";
+	std::string keyset_name = "dexxxxxxxxxxxxed";
 	DWORD alg_sblock_id = 26128; // AES 256-bit
 	HCRYPTPROV csp_handler = 0;
 	HCRYPTKEY key_exchange_handler = 0;
@@ -322,7 +316,7 @@ int main(int argc, const char** argv)
 			import_key(csp_handler, impkey_handler, argv[2], key_handler);
 			encrypt_file(key_handler, argv[3], argv[4]);
 		}
-		else if (!strcmp(argv[1], "decrypt"))
+		else if (!strcmp(argv[1], "decrypt") && argv[3] != "" && argv[4] != "")
 		{
 			HCRYPTKEY key_handler, impkey_handler;
 			if (!CryptGetUserKey(csp_handler, AT_KEYEXCHANGE, &impkey_handler))
@@ -331,7 +325,7 @@ int main(int argc, const char** argv)
 			decrypt_file(key_handler, argv[3], argv[4]);
 		}
 		else
-			throw descriptive_exception("bad 1 argument");
+			throw descriptive_exception("Bad arguments");
 	}
 	catch (exception & error) {
 		cout << "Error message: " << error.what() << endl;
